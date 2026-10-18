@@ -1,5 +1,8 @@
 streamlit
 pandas
-openpyxl
+numpy
 yfinance
+openpyxl
 requests
+gspread
+google-auth
