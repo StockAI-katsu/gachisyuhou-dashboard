@@ -20,9 +20,16 @@ st.markdown("---")
 # ---------------------------------------------------------
 # マスターデータのロード
 # ---------------------------------------------------------
-df_track, df_sig, df_ma_cache, df_brk_cache = (
-    screening_logic.load_tracking_master()
-)
+try:
+    df_track, df_sig, df_ma_cache, df_brk_cache = (
+        screening_logic.load_tracking_master()
+    )
+except Exception as e:
+    st.error(f"⚠️ Googleスプレッドシートの読み込みに失敗しました: {e}")
+    df_track = pd.DataFrame(columns=screening_logic.TRACKING_COLUMNS)
+    df_sig = pd.DataFrame()
+    df_ma_cache = pd.DataFrame()
+    df_brk_cache = pd.DataFrame()
 
 for col in screening_logic.TRACKING_COLUMNS:
     if col not in df_track.columns:
