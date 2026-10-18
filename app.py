@@ -204,7 +204,6 @@ else:
                 f" {datetime.today().strftime('%Y-%m-%d')})"
             )
         
-        # 1. 2日・3日調整シグナルデータの事前用意
         sig_adj_mkt = st.selectbox("対象市場（調整シグナル共通）", ["すべて", "プライム", "スタンダード", "グロース"], key="sig_adj_mkt")
         df_sig_track = df_track if sig_adj_mkt == "すべて" else df_track[df_track["市場"].str.contains(sig_adj_mkt, na=False)]
         
@@ -215,7 +214,6 @@ else:
             df_sig_track, df_ma_cache, adjustment_days=3, min_dev=-100.0, max_dev=100.0
         )
 
-        # MAタッチシグナルデータの用意（5日接近）
         df_d_res = pd.DataFrame()
         if not df_ma_cache.empty:
             df_d = df_ma_cache.copy()
@@ -225,7 +223,6 @@ else:
             cond_ema = (df_d["EMA_5位置関係"] == "🎯 接近中") if "EMA_5位置関係" in df_d.columns else False
             df_d_res = df_d[cond_sma | cond_ema].drop_duplicates(subset=["コード"])
 
-        # 高値ブレイクシグナルデータの用意（3ヶ月・デフォルト）
         df_brk_sig_res = pd.DataFrame()
         if not df_brk_cache.empty:
             df_b = df_brk_cache.copy()
@@ -254,7 +251,6 @@ else:
 
         st.markdown("---")
 
-        # 1. 2日・3日調整手法シグナル表示
         st.markdown("### 📉 １．２・３日調整手法シグナル（発生から２～３営業日目）")
         c_sig_a1, c_sig_a2 = st.columns(2)
         with c_sig_a1:
@@ -275,7 +271,6 @@ else:
 
         st.markdown("---")
 
-        # 2. MAタッチ手法シグナル表示
         st.markdown("### 📈 ２．MAタッチ手法シグナル（特化型フィルター完備）")
         col_sig_d, col_sig_s = st.columns(2)
 
@@ -322,7 +317,6 @@ else:
 
         st.markdown("---")
 
-        # 3. 高値ブレイク手法シグナル表示
         st.markdown("### 🚀 ３．高値ブレイク手法シグナル")
         if not df_brk_sig_res.empty:
             st.dataframe(df_brk_sig_res.drop_duplicates(subset=["コード"]), use_container_width=True, hide_index=True)
@@ -369,7 +363,7 @@ else:
         st.dataframe(df_trk_view, use_container_width=True, hide_index=True)
 
     # ---------------------------------------------------------
-    # 📉 2日・3日調整手法 タブ
+    # 📉 2日・3日調整手法 タブ（上段・中段・下段完備）
     # ---------------------------------------------------------
     with tab_adjust:
         c_title_adj, c_dl_adj = st.columns([3.5, 1.5])
@@ -445,8 +439,25 @@ else:
         else:
             st.info("条件を満たす3日調整銘柄はありません。")
 
+        # 【下段】セクター別最適戦略
+        st.markdown("---")
+        st.markdown("### 🏢 【下段】セクター別最適戦略 (過去実績ベース)")
+        sectors = [s for s in df_adj_filtered["セクター"].dropna().unique() if str(s).strip() != "" and str(s) != "nan"]
+        if sectors:
+            for sector in sectors:
+                sector_df = df_adj_filtered[df_adj_filtered["セクター"] == sector]
+                if len(sector_df) >= 2:
+                    st.markdown(f"**・セクター: 【 {sector} 】** (検証数: {len(sector_df)}件)")
+                    sec_top = calculate_optimal_strategies_for_df(sector_df, method_name=f"調整手法 ({sector})")
+                    if not sec_top.empty:
+                        c1, c2, c3 = st.columns(3)
+                        cols = [c1, c2, c3]
+                        for s_idx, (_, strat) in enumerate(sec_top.iterrows()):
+                            with cols[s_idx]:
+                                cols[s_idx].markdown(f"**{s_idx+1}位**: イン: {strat['イン']} / アウト: {strat['アウト']} | 勝率:**{strat['勝率']}%** (平均:+{strat['平均リターン']}%)")
+
     # ---------------------------------------------------------
-    # 📈 MAタッチ手法 タブ
+    # 📈 MAタッチ手法 タブ（上段・中段・下段完備）
     # ---------------------------------------------------------
     with tab_ma:
         c_title_ma, c_dl_ma = st.columns([3.5, 1.5])
@@ -518,8 +529,26 @@ else:
         else:
             st.info("現在、条件を満たすMAタッチ・接近中の銘柄はありません。")
 
+        # 【下段】セクター別最適戦略
+        st.markdown("---")
+        st.markdown("### 🏢 【下段】セクター別最適戦略 (MAタッチ実績ベース)")
+        if not df_track.empty:
+            sectors = [s for s in df_track["セクター"].dropna().unique() if str(s).strip() != "" and str(s) != "nan"]
+            if sectors:
+                for sector in sectors:
+                    sector_df = df_track[df_track["セクター"] == sector]
+                    if len(sector_df) >= 2:
+                        st.markdown(f"**・セクター: 【 {sector} 】** (検証数: {len(sector_df)}件)")
+                        sec_top = calculate_optimal_strategies_for_df(sector_df, method_name=f"MAタッチ ({sector})")
+                        if not sec_top.empty:
+                            c1, c2, c3 = st.columns(3)
+                            cols = [c1, c2, c3]
+                            for s_idx, (_, strat) in enumerate(sec_top.iterrows()):
+                                with cols[s_idx]:
+                                    cols[s_idx].markdown(f"**{s_idx+1}位**: イン: {strat['イン']} / アウト: {strat['アウト']} | 勝率:**{strat['勝率']}%** (平均:+{strat['平均リターン']}%)")
+
     # ---------------------------------------------------------
-    # 🚀 高値ブレイク タブ
+    # 🚀 高値ブレイク タブ（上段・中段・下段完備）
     # ---------------------------------------------------------
     with tab_break:
         c_title_brk, c_dl_brk = st.columns([3.5, 1.5])
@@ -589,6 +618,24 @@ else:
             st.dataframe(df_brk_view, use_container_width=True, hide_index=True)
         else:
             st.info(f"現在、選択された条件（高値スパン: {brk_period} / 乖離率: {brk_min_dev}%〜{brk_max_dev}%）に合致する銘柄はありません。")
+
+        # 【下段】セクター別最適戦略
+        st.markdown("---")
+        st.markdown("### 🏢 【下段】セクター別最適戦略 (高値ブレイク実績ベース)")
+        if not df_track.empty:
+            sectors = [s for s in df_track["セクター"].dropna().unique() if str(s).strip() != "" and str(s) != "nan"]
+            if sectors:
+                for sector in sectors:
+                    sector_df = df_track[df_track["セクター"] == sector]
+                    if len(sector_df) >= 2:
+                        st.markdown(f"**・セクター: 【 {sector} 】** (検証数: {len(sector_df)}件)")
+                        sec_top = calculate_optimal_strategies_for_df(sector_df, method_name=f"高値ブレイク ({sector})")
+                        if not sec_top.empty:
+                            c1, c2, c3 = st.columns(3)
+                            cols = [c1, c2, c3]
+                            for s_idx, (_, strat) in enumerate(sec_top.iterrows()):
+                                with cols[s_idx]:
+                                    cols[s_idx].markdown(f"**{s_idx+1}位**: イン: {strat['イン']} / アウト: {strat['アウト']} | 勝率:**{strat['勝率']}%** (平均:+{strat['平均リターン']}%)")
 
     # ---------------------------------------------------------
     # 🤖 セクター別最適戦略 タブ
