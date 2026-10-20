@@ -723,14 +723,41 @@ def filter_adjustment_signals(
     min_dev=-30.0,
     max_dev=30.0,
 ):
-  """【2日・3日調整手法】スクリーニング関数"""
-  if df_track.empty:
+  """【2日・3日調整手法】スクリーニング関数（発生日表示・営業日ベース起点判定対応版）"""
+  if df_track.empty or "発生日" not in df_track.columns:
     return pd.DataFrame()
+
+  df = df_track.copy()
+  df["発生日_dt"] = pd.to_datetime(
+      df["発生日"].astype(str), format="%Y%m%d", errors="coerce"
+  )
+  if df["発生日_dt"].isna().all():
+    return pd.DataFrame()
+
+  # 1. データ内に存在するユニークな発生日を降順（新しい順）で取得
+  unique_dates = sorted(df["発生日_dt"].dropna().unique(), reverse=True)
+
+  # 2. 調整日数に応じた「対象とすべき発生日（起点）」を営業日ベースで特定
+  target_date = None
+  if adjustment_days == 2:
+    if len(unique_dates) >= 1:
+      target_date = unique_dates[0]
+  elif adjustment_days == 3:
+    if len(unique_dates) >= 2:
+      target_date = unique_dates[1]
+  else:
+    return pd.DataFrame()
+
+  if target_date is None:
+    return pd.DataFrame()
+
+  # 発生日が該当する営業日の銘柄だけに厳密に絞り込む
+  df = df[df["発生日_dt"] == target_date]
 
   results = []
   latest_date_str = datetime.today().strftime("%m/%d")
 
-  for idx, row in df_track.iterrows():
+  for idx, row in df.iterrows():
     base_close = row.get("発生日終値")
     if pd.isna(base_close) or float(base_close) == 0:
       continue
@@ -744,24 +771,18 @@ def filter_adjustment_signals(
     latest_price = None
 
     if adjustment_days == 2:
+      if pd.notna(d1_close):
+        d1_close = float(d1_close)
+        if d1_close < base_close:
+          is_signal = True
+          latest_price = d1_close
+    elif adjustment_days == 3:
       if pd.notna(d1_close) and pd.notna(d2_close):
         d1_close = float(d1_close)
         d2_close = float(d2_close)
         if d1_close < base_close and d2_close < d1_close:
           is_signal = True
           latest_price = d2_close
-    elif adjustment_days == 3:
-      if pd.notna(d1_close) and pd.notna(d2_close) and pd.notna(d3_close):
-        d1_close = float(d1_close)
-        d2_close = float(d2_close)
-        d3_close = float(d3_close)
-        if (
-            d1_close < base_close
-            and d2_close < d1_close
-            and d3_close < d2_close
-        ):
-          is_signal = True
-          latest_price = d3_close
 
     if not is_signal or latest_price is None:
       continue
@@ -823,8 +844,16 @@ def filter_adjustment_signals(
       if not is_in_range:
         continue
 
+    # 発生日の値を確実に取得（YYYYMMDDなどをそのまま、あるいはフォーマットして格納）
+    raw_date = row.get("発生日", "")
+    str_date = str(raw_date).strip()
+    if len(str_date) == 8 and str_date.isdigit():
+      formatted_date = f"{str_date[:4]}-{str_date[4:6]}-{str_date[6:]}"
+    else:
+      formatted_date = str_date
+
     res_row = {
-        "発生日": row.get("発生日", ""),
+        "発生日": formatted_date,
         "コード": code,
         "銘柄名": row.get("銘柄名", ""),
         "市場": row.get("市場", ""),
@@ -847,4 +876,32 @@ def filter_adjustment_signals(
     }
     results.append(res_row)
 
-  return pd.DataFrame(results)
+  if not results:
+    return pd.DataFrame()
+
+  df_res = pd.DataFrame(results)
+  # カラムの順番を保証して返す
+  cols_order = [
+      "発生日",
+      "コード",
+      "銘柄名",
+      "市場",
+      "セクター",
+      "S高発生時終値",
+      "最新株価（日付）",
+      "5SMA乖離率(%)",
+      "5SMA位置関係",
+      "25SMA乖離率(%)",
+      "25SMA位置関係",
+      "75SMA乖離率(%)",
+      "75SMA位置関係",
+      "5EMA乖離率(%)",
+      "5EMA位置関係",
+      "25EMA乖離率(%)",
+      "25EMA位置関係",
+      "75EMA乖離率(%)",
+      "75EMA位置関係",
+      "S高理由・テーマ",
+  ]
+  existing_cols = [c for c in cols_order if c in df_res.columns]
+  return df_res[existing_cols]
