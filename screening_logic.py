@@ -713,7 +713,6 @@ def compute_ma_status_and_dev(current_price, ma_value, threshold_pct=3.0):
 
   return status, round(dev_pct, 2)
 
-
 def filter_adjustment_signals(
     df_track,
     df_ma_cache,
@@ -723,7 +722,7 @@ def filter_adjustment_signals(
     min_dev=-30.0,
     max_dev=30.0,
 ):
-  """【2日・3日調整手法】スクリーニング関数（発生日表示・営業日ベース起点判定対応版）"""
+  """【2日・3日調整手法】スクリーニング関数（ユーザー様定義の営業日・連続下落ロジック完全準拠版）"""
   if df_track.empty or "発生日" not in df_track.columns:
     return pd.DataFrame()
 
@@ -740,9 +739,11 @@ def filter_adjustment_signals(
   # 2. 調整日数に応じた「対象とすべき発生日（起点）」を営業日ベースで特定
   target_date = None
   if adjustment_days == 2:
+    # 2日調整：起点となる発生日は「前営業日（一番新しい発生日）」
     if len(unique_dates) >= 1:
       target_date = unique_dates[0]
   elif adjustment_days == 3:
+    # 3日調整：起点となる発生日は「前々営業日（2番目に新しい発生日）」
     if len(unique_dates) >= 2:
       target_date = unique_dates[1]
   else:
@@ -765,18 +766,26 @@ def filter_adjustment_signals(
     base_close = float(base_close)
     d1_close = row.get("1日目_終値")
     d2_close = row.get("2日目_終値")
-    d3_close = row.get("3日目_終値")
 
     is_signal = False
     latest_price = None
 
+    # 3. ユーザー様の定義に沿った厳密な判定
     if adjustment_days == 2:
-      if pd.notna(d1_close):
+      # 2日調整：前営業日S高(起点)で、本日は前営業日S高値から下落していること
+      if pd.notna(d2_close):
+        d2_close = float(d2_close)
+        if d2_close < base_close:
+          is_signal = True
+          latest_price = d2_close
+      elif pd.notna(d1_close):  # d2が未取得の場合はd1を見るフォールバック
         d1_close = float(d1_close)
         if d1_close < base_close:
           is_signal = True
           latest_price = d1_close
+
     elif adjustment_days == 3:
+      # 3日調整：前々営業日S高(起点)で、前営業日(d1)が起点より安値引け、かつ本日(d2)が前営業日(d1)から下落していること
       if pd.notna(d1_close) and pd.notna(d2_close):
         d1_close = float(d1_close)
         d2_close = float(d2_close)
@@ -844,7 +853,6 @@ def filter_adjustment_signals(
       if not is_in_range:
         continue
 
-    # 発生日の値を確実に取得（YYYYMMDDなどをそのまま、あるいはフォーマットして格納）
     raw_date = row.get("発生日", "")
     str_date = str(raw_date).strip()
     if len(str_date) == 8 and str_date.isdigit():
@@ -880,7 +888,6 @@ def filter_adjustment_signals(
     return pd.DataFrame()
 
   df_res = pd.DataFrame(results)
-  # カラムの順番を保証して返す
   cols_order = [
       "発生日",
       "コード",
