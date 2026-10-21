@@ -31,42 +31,43 @@ def load_stock_master():
   market_dict = {}
   sector_dict = {}
 
-  if os.path.exists(STOCK_MASTER_FILE):
-    try:
-      df_ex = pd.read_excel(
-          STOCK_MASTER_FILE, sheet_name="銘柄データ", dtype=str
-      )
-      for _, row in df_ex.iterrows():
-        code_raw = str(row.get("コード", "")).replace(".T", "").strip()
-        if (
-            not code_raw
-            or code_raw.lower() == "nan"
-            or not code_raw.isdigit()
-        ):
-          continue
-        code = code_raw.zfill(4)
+  # ご自身のスプレッドシートのURL（gid=0などは必要に応じて調整してください）
+  sheet_url = "https://docs.google.com/spreadsheets/d/11qtf0L__69eW3b_jNfXMz6L5uKcZWRZnUtKeVFuirrE/export?format=csv&gid=0"
 
-        name = str(row.get("銘柄名", "")).strip()
-        market_raw = str(row.get("市場・商品区分", "プライム"))
-        sector_raw = str(row.get("33業種区分", "")).strip()
+  name_dict = {}
+  market_dict = {}
+  sector_dict = {}
 
-        if name and name != "nan":
-          name_dict[code] = name
-        if "プライム" in market_raw:
-          market_dict[code] = "プライム"
-        elif "スタンダード" in market_raw:
-          market_dict[code] = "スタンダード"
-        elif "グロース" in market_raw:
-          market_dict[code] = "グロース"
-        else:
-          market_dict[code] = (
-              market_raw if market_raw != "nan" else "プライム"
-          )
+  try:
+    # Excelファイル読み込みからCSV（スプレッドシート）読み込みに変更
+    df_ex = pd.read_csv(sheet_url, dtype=str)
 
-        if sector_raw and sector_raw != "nan" and sector_raw != "-":
-          sector_dict[code] = sector_raw
-    except Exception as e:
-      print(f"市場マスター読み込みエラー: {e}")
+    for _, row in df_ex.iterrows():
+      code_raw = str(row.get("コード", "")).replace(".T", "").strip()
+      if not code_raw or code_raw.lower() == "nan" or not code_raw.isdigit():
+        continue
+      code = code_raw.zfill(4)
+
+      name = str(row.get("銘柄名", "")).strip()
+      market_raw = str(row.get("市場・商品区分", "プライム"))
+      sector_raw = str(row.get("33業種区分", "")).strip()
+
+      if name and name != "nan":
+        name_dict[code] = name
+      if "プライム" in market_raw:
+        market_dict[code] = "プライム"
+      elif "スタンダード" in market_raw:
+        market_dict[code] = "スタンダード"
+      elif "グロース" in market_raw:
+        market_dict[code] = "グロース"
+      else:
+        market_dict[code] = market_raw if market_raw != "nan" else "プライム"
+
+      if sector_raw and sector_raw != "nan" and sector_raw != "-":
+        sector_dict[code] = sector_raw
+  except Exception as e:
+    print(f"市場マスター読み込みエラー: {e}")
+
   return name_dict, market_dict, sector_dict
 
 
@@ -911,4 +912,4 @@ def filter_adjustment_signals(
       "S高理由・テーマ",
   ]
   existing_cols = [c for c in cols_order if c in df_res.columns]
-  return df_res[existing_cols]
+  return df_res[existing_cols]  # ← ここもインデントを揃える
