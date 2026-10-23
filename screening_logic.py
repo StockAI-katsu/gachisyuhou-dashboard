@@ -246,6 +246,19 @@ def load_tracking_master():
     except Exception as e:
       print(f"追跡マスター読み込みエラー: {e}")
 
+  # --- ▼▼▼ ここから追加 (キャッシュ内の廃止銘柄を排除) ▼▼▼ ---
+  if not df_track.empty and "コード" in df_track.columns:
+    valid_track_codes = set(df_track["コード"].astype(str).str.zfill(4))
+
+    if not df_ma.empty and "コード" in df_ma.columns:
+      df_ma["コード"] = df_ma["コード"].astype(str).str.zfill(4)
+      df_ma = df_ma[df_ma["コード"].isin(valid_track_codes)]
+
+    if not df_brk.empty and "コード" in df_brk.columns:
+      df_brk["コード"] = df_brk["コード"].astype(str).str.zfill(4)
+      df_brk = df_brk[df_brk["コード"].isin(valid_track_codes)]
+  # --- ▲▲▲ ここまで追加 ▲▲▲ ---
+
   return df_track, df_sig, df_ma, df_brk
 
 
@@ -269,6 +282,20 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
     return df_track, 0, 0
 
   name_dict, market_dict, sector_dict = load_stock_master()
+
+  # --- ▼▼▼ ここから追加 (スプレッドシートに存在しない廃止銘柄を除外) ▼▼▼ ---
+  if name_dict:
+    valid_codes = set(name_dict.keys())
+    # df_trackの「コード」列を4桁文字列にして比較し、スプレッドシートに存在するコードだけに絞り込む
+    df_track["コード_check"] = (
+        df_track["コード"].astype(str).str.replace(".T", "").str.zfill(4)
+    )
+    df_track = df_track[df_track["コード_check"].isin(valid_codes)].drop(
+        columns=["コード_check"]
+    )
+    if df_track.empty:
+      return df_track, 0, 0
+  # --- ▲▲▲ ここまで追加 ▲▲▲ ---
 
   numeric_cols = ["発生日終値"] + DAY_COLUMNS
   for col in numeric_cols:
