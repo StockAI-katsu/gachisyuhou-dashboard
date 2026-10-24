@@ -24,11 +24,27 @@ df_track, df_sig, df_ma_cache, df_brk_cache = (
     screening_logic.load_tracking_master()
 )
 
+
+# --- ETF / ETN を除外 ---
+def filter_etf(df):
+  if not df.empty and "市場" in df.columns:
+    return df[
+        ~df["市場"]
+        .astype(str)
+        .str.contains("ETF|ETN", case=False, na=False)
+    ].copy()
+  return df
+
+
+df_track = filter_etf(df_track)
+df_ma_cache = filter_etf(df_ma_cache)
+df_brk_cache = filter_etf(df_brk_cache)
+
 for col in screening_logic.TRACKING_COLUMNS:
   if col not in df_track.columns:
     df_track[col] = None
 
-# df_track から確実なセクター辞書（マップ）を作成
+# df_track から確実なセクター辞書を作成
 sector_map = {}
 if not df_track.empty and "コード" in df_track.columns:
   for _, r in df_track.iterrows():
@@ -73,6 +89,12 @@ if (df_ma_cache.empty or df_brk_cache.empty) and not df_track.empty:
   except Exception:
     pass
 
+
+# CSV変換用ヘルパー関数
+def convert_df_to_csv(df):
+  return df.to_csv(index=False).encode("utf-8-sig")
+
+
 # ---------------------------------------------------------
 # サイドバー：操作パネル
 # ---------------------------------------------------------
@@ -81,12 +103,11 @@ st.sidebar.header("🎛️ コントロールパネル")
 if os.path.exists(screening_logic.TRACKING_EXCEL_OUT):
   with open(screening_logic.TRACKING_EXCEL_OUT, "rb") as f:
     st.sidebar.download_button(
-        label="📦 【ガチ研専用】ストップ高追跡リストをダウンロード",
+        label="📦 【ガチ研専用】全シート一括Excelをダウンロード",
         data=f,
         file_name="【ガチ研専用】ストップ高追跡リスト.xlsx",
         mime=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml"
-            ".spreadsheetml.sheet"
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
 else:
@@ -208,7 +229,7 @@ def calculate_optimal_strategies_for_df(dataframe, method_name):
 
 
 # ---------------------------------------------------------
-# 共通コンポーネント：高値ブレイク用シグナル表示関数（型安全・エラー防止・セクター保護対応）
+# 共通コンポーネント：高値ブレイク用シグナル表示関数
 # ---------------------------------------------------------
 def render_breakout_section(key_prefix="global", show_filters=True):
   st.markdown("### 🚀 高値ブレイク手法シグナル")
@@ -307,21 +328,22 @@ def render_breakout_section(key_prefix="global", show_filters=True):
                 pd.to_numeric(r.get("出来高", 0), errors="coerce") or 0
             ),
         })
-      df_view = pd.DataFrame(view_rows)
+      df_view = pd.DataFrame(view_rows).drop_duplicates(subset=["コード"])
+
+      st.download_button(
+          label="📥 高値ブレイク表示データをCSV保存",
+          data=convert_df_to_csv(df_view),
+          file_name=f"高値ブレイク_{key_prefix}.csv",
+          mime="text/csv",
+          key=f"dl_brk_{key_prefix}",
+      )
 
       if "出来高" in df_view.columns:
         df_view["出来高"] = df_view["出来高"].apply(lambda x: f"{x:,}")
 
-      st.dataframe(
-          df_view.drop_duplicates(subset=["コード"]),
-          use_container_width=True,
-          hide_index=True,
-      )
+      st.dataframe(df_view, width="stretch", hide_index=True)
     else:
-      st.info(
-          "現在、選択された条件（高値スパン:"
-          f" {brk_period} / 乖離率: {brk_min_dev}%〜{brk_max_dev}%）に合致する銘柄はありません。"
-      )
+      st.info("現在、選択された条件に合致する銘柄はありません。")
   else:
     st.info("事前計算データを準備中です。サイドバーの画面更新を実行してください。")
 
@@ -332,8 +354,7 @@ def render_breakout_section(key_prefix="global", show_filters=True):
 if df_track.empty:
   st.info(
       "👈 左側のサイドバーにある **「🔄 Googleスプレッドシート取得 ＆"
-      " 全件一括株価更新」**"
-      " ボタンを押して、最新データをロードしてください。"
+      " 全件一括株価更新」** ボタンを押して、最新データをロードしてください。"
   )
 else:
   tab_signal, tab_tracking, tab_adjust, tab_ma, tab_break, tab_ai = st.tabs([
@@ -346,7 +367,7 @@ else:
   ])
 
   # ---------------------------------------------------------
-  # 🔔 本日のシグナル タブ (全手法の最新勝負銘柄を総覧)
+  # 🔔 本日のシグナル タブ
   # ---------------------------------------------------------
   with tab_signal:
     st.subheader(
@@ -361,28 +382,44 @@ else:
     with c_sig_a1:
       st.markdown("#### 【２日調整】")
       adj2_sig_df = screening_logic.filter_adjustment_signals(
-          df_track, df_ma_cache, adjustment_days=2, min_dev=-100.0, max_dev=100.0
+          df_track,
+          df_ma_cache,
+          adjustment_days=2,
+          min_dev=-100.0,
+          max_dev=100.0,
       )
       if not adj2_sig_df.empty:
-        st.dataframe(
-            adj2_sig_df.drop_duplicates(subset=["コード"]),
-            use_container_width=True,
-            hide_index=True,
+        df_dl2 = adj2_sig_df.drop_duplicates(subset=["コード"])
+        st.download_button(
+            "📥 2日調整シグナルをCSV保存",
+            convert_df_to_csv(df_dl2),
+            "2日調整シグナル.csv",
+            "text/csv",
+            key="dl_sig_adj2",
         )
+        st.dataframe(df_dl2, width="stretch", hide_index=True)
       else:
         st.info("現在、2日調整のシグナルはありません。")
 
     with c_sig_a2:
       st.markdown("#### 【３日調整】")
       adj3_sig_df = screening_logic.filter_adjustment_signals(
-          df_track, df_ma_cache, adjustment_days=3, min_dev=-100.0, max_dev=100.0
+          df_track,
+          df_ma_cache,
+          adjustment_days=3,
+          min_dev=-100.0,
+          max_dev=100.0,
       )
       if not adj3_sig_df.empty:
-        st.dataframe(
-            adj3_sig_df.drop_duplicates(subset=["コード"]),
-            use_container_width=True,
-            hide_index=True,
+        df_dl3 = adj3_sig_df.drop_duplicates(subset=["コード"])
+        st.download_button(
+            "📥 3日調整シグナルをCSV保存",
+            convert_df_to_csv(df_dl3),
+            "3日調整シグナル.csv",
+            "text/csv",
+            key="dl_sig_adj3",
         )
+        st.dataframe(df_dl3, width="stretch", hide_index=True)
       else:
         st.info("現在、3日調整のシグナルはありません。")
 
@@ -442,17 +479,20 @@ else:
               "EMA_5位置関係",
           ]
           actual_d = [c for c in cols_d if c in df_d_res.columns]
-          st.dataframe(
-              df_d_res[actual_d].drop_duplicates(subset=["コード"]),
-              use_container_width=True,
-              hide_index=True,
+          df_d_final = df_d_res[actual_d].drop_duplicates(subset=["コード"])
+
+          st.download_button(
+              "📥 デイトレ5日線シグナルをCSV保存",
+              convert_df_to_csv(df_d_final),
+              "デイトレ5日線シグナル.csv",
+              "text/csv",
+              key="dl_sig_d",
           )
+          st.dataframe(df_d_final, width="stretch", hide_index=True)
         else:
           st.info(
               "現在、デイトレ狙い（5日線接近）のシグナルはありません。"
           )
-      else:
-        st.info("事前計算データを準備中です。サイドバーの画面更新を実行してください。")
 
     with col_sig_s:
       st.markdown("#### 🌊 【スイング狙い】25日/75日線 押し目候補シグナル")
@@ -520,21 +560,22 @@ else:
               "SMA_75位置関係",
           ]
           actual_s = [c for c in cols_s if c in df_s_res.columns]
-          st.dataframe(
-              df_s_res[actual_s].drop_duplicates(subset=["コード"]),
-              use_container_width=True,
-              hide_index=True,
+          df_s_final = df_s_res[actual_s].drop_duplicates(subset=["コード"])
+
+          st.download_button(
+              "📥 スイング押し目シグナルをCSV保存",
+              convert_df_to_csv(df_s_final),
+              "スイング押し目シグナル.csv",
+              "text/csv",
+              key="dl_sig_s",
           )
+          st.dataframe(df_s_final, width="stretch", hide_index=True)
         else:
           st.info(
               "現在、スイング狙いの条件に合致するシグナルはありません。"
           )
-      else:
-        st.info("事前計算データを準備中です。サイドバーの画面更新を実行してください。")
 
     st.markdown("---")
-
-    # 3. 高値ブレイク手法シグナル
     render_breakout_section(key_prefix="sig_tab_brk", show_filters=True)
 
   # ---------------------------------------------------------
@@ -558,16 +599,21 @@ else:
         for col in df_trk_filtered.columns
         if col not in base_cols and col != "アラートID"
     ]
-    st.dataframe(
-        df_trk_filtered[
-            [c for c in base_cols if c in df_trk_filtered.columns] + day_cols
-        ].drop_duplicates(subset=["コード"]),
-        use_container_width=True,
-        hide_index=True,
+    df_trk_display = df_trk_filtered[
+        [c for c in base_cols if c in df_trk_filtered.columns] + day_cols
+    ].drop_duplicates(subset=["コード"])
+
+    st.download_button(
+        "📥 追跡管理一覧データをCSV保存",
+        convert_df_to_csv(df_trk_display),
+        "追跡管理一覧.csv",
+        "text/csv",
+        key="dl_trk",
     )
+    st.dataframe(df_trk_display, width="stretch", hide_index=True)
 
   # ---------------------------------------------------------
-  # 📉 2日・3日調整手法 タブ（3段構成）
+  # 📉 2日・3日調整手法 タブ（上段・中段・下段完全網羅）
   # ---------------------------------------------------------
   with tab_adjust:
     st.subheader("📉 2日・3日調整 手法分析 ＆ スクリーニング")
@@ -580,28 +626,44 @@ else:
     with c_adj_t1:
       st.markdown("#### 【２日調整】")
       adj2_top_df = screening_logic.filter_adjustment_signals(
-          df_track, df_ma_cache, adjustment_days=2, min_dev=-100.0, max_dev=100.0
+          df_track,
+          df_ma_cache,
+          adjustment_days=2,
+          min_dev=-100.0,
+          max_dev=100.0,
       )
       if not adj2_top_df.empty:
-        st.dataframe(
-            adj2_top_df.drop_duplicates(subset=["コード"]),
-            use_container_width=True,
-            hide_index=True,
+        df_top2 = adj2_top_df.drop_duplicates(subset=["コード"])
+        st.download_button(
+            "📥 2日調整シグナルをCSV保存",
+            convert_df_to_csv(df_top2),
+            "2日調整シグナル.csv",
+            "text/csv",
+            key="dl_adj2_top",
         )
+        st.dataframe(df_top2, width="stretch", hide_index=True)
       else:
         st.info("現在、2日調整のシグナルはありません。")
 
     with c_adj_t2:
       st.markdown("#### 【３日調整】")
       adj3_top_df = screening_logic.filter_adjustment_signals(
-          df_track, df_ma_cache, adjustment_days=3, min_dev=-100.0, max_dev=100.0
+          df_track,
+          df_ma_cache,
+          adjustment_days=3,
+          min_dev=-100.0,
+          max_dev=100.0,
       )
       if not adj3_top_df.empty:
-        st.dataframe(
-            adj3_top_df.drop_duplicates(subset=["コード"]),
-            use_container_width=True,
-            hide_index=True,
+        df_top3 = adj3_top_df.drop_duplicates(subset=["コード"])
+        st.download_button(
+            "📥 3日調整シグナルをCSV保存",
+            convert_df_to_csv(df_top3),
+            "3日調整シグナル.csv",
+            "text/csv",
+            key="dl_adj3_top",
         )
+        st.dataframe(df_top3, width="stretch", hide_index=True)
       else:
         st.info("現在、3日調整のシグナルはありません。")
 
@@ -662,11 +724,15 @@ else:
         max_dev=adj_max_dev,
     )
     if not adj2_filtered_df.empty:
-      st.dataframe(
-          adj2_filtered_df.drop_duplicates(subset=["コード"]),
-          use_container_width=True,
-          hide_index=True,
+      df_adj2_final = adj2_filtered_df.drop_duplicates(subset=["コード"])
+      st.download_button(
+          "📥 2日調整スクリーニング一覧をCSV保存",
+          convert_df_to_csv(df_adj2_final),
+          "2日調整スクリーニング.csv",
+          "text/csv",
+          key="dl_adj2_mid",
       )
+      st.dataframe(df_adj2_final, width="stretch", hide_index=True)
     else:
       st.info("条件を満たす2日調整銘柄はありません。")
 
@@ -681,11 +747,15 @@ else:
         max_dev=adj_max_dev,
     )
     if not adj3_filtered_df.empty:
-      st.dataframe(
-          adj3_filtered_df.drop_duplicates(subset=["コード"]),
-          use_container_width=True,
-          hide_index=True,
+      df_adj3_final = adj3_filtered_df.drop_duplicates(subset=["コード"])
+      st.download_button(
+          "📥 3日調整スクリーニング一覧をCSV保存",
+          convert_df_to_csv(df_adj3_final),
+          "3日調整スクリーニング.csv",
+          "text/csv",
+          key="dl_adj3_mid",
       )
+      st.dataframe(df_adj3_final, width="stretch", hide_index=True)
     else:
       st.info("条件を満たす3日調整銘柄はありません。")
 
@@ -719,12 +789,12 @@ else:
                 )
 
   # ---------------------------------------------------------
-  # 📈 MAタッチ手法 タブ（3段構成）
+  # 📈 MAタッチ手法 タブ（上段・中段・下段完全網羅）
   # ---------------------------------------------------------
   with tab_ma:
     st.subheader("📈 MAタッチ手法 ＆ 接近監視")
 
-    # 【上段】本日のシグナル（特化型フィルター付き）
+    # 【上段】本日のシグナル
     st.markdown("### 🎯 【上段】本日のシグナル（特化型フィルター完備）")
     col_ma_top_d, col_ma_top_s = st.columns(2)
 
@@ -778,17 +848,19 @@ else:
               "EMA_5位置関係",
           ]
           actual_d = [c for c in cols_d if c in df_d_res.columns]
-          st.dataframe(
-              df_d_res[actual_d].drop_duplicates(subset=["コード"]),
-              use_container_width=True,
-              hide_index=True,
+          df_d_top = df_d_res[actual_d].drop_duplicates(subset=["コード"])
+          st.download_button(
+              "📥 デイトレ5日線シグナルをCSV保存",
+              convert_df_to_csv(df_d_top),
+              "デイトレ5日線シグナル.csv",
+              "text/csv",
+              key="dl_ma_top_d",
           )
+          st.dataframe(df_d_top, width="stretch", hide_index=True)
         else:
           st.info(
               "現在、デイトレ狙い（5日線接近）のシグナルはありません。"
           )
-      else:
-        st.info("事前計算データを準備中です。サイドバーの画面更新を実行してください。")
 
     with col_ma_top_s:
       st.markdown("#### 🌊 【スイング狙い】25日/75日線 押し目候補シグナル")
@@ -856,21 +928,23 @@ else:
               "SMA_75位置関係",
           ]
           actual_s = [c for c in cols_s if c in df_s_res.columns]
-          st.dataframe(
-              df_s_res[actual_s].drop_duplicates(subset=["コード"]),
-              use_container_width=True,
-              hide_index=True,
+          df_s_top = df_s_res[actual_s].drop_duplicates(subset=["コード"])
+          st.download_button(
+              "📥 スイング押し目シグナルをCSV保存",
+              convert_df_to_csv(df_s_top),
+              "スイング押し目シグナル.csv",
+              "text/csv",
+              key="dl_ma_top_s",
           )
+          st.dataframe(df_s_top, width="stretch", hide_index=True)
         else:
           st.info(
               "現在、スイング狙いの条件に合致するシグナルはありません。"
           )
-      else:
-        st.info("事前計算データを準備中です。サイドバーの画面更新を実行してください。")
 
     st.markdown("---")
 
-    # 【中段】全監視スクリーニング（6大フィルター完備）
+    # 【中段】詳細スクリーニング
     st.markdown(
         "### 🔍 【中段】詳細スクリーニング（6大フィルター完備・全MA一覧）"
     )
@@ -926,15 +1000,21 @@ else:
         ]
 
       if ma_status_filter == "接近中のみ（狙い目）":
-        df_ma_filtered = df_ma_filtered[df_ma_filtered["is_target"] == "True"]
+        df_ma_filtered = df_ma_filtered[
+            df_ma_filtered["is_target"] == "True"
+        ]
       elif ma_status_filter == "推移中のみ":
-        df_ma_filtered = df_ma_filtered[df_ma_filtered["is_target"] == "False"]
+        df_ma_filtered = df_ma_filtered[
+            df_ma_filtered["is_target"] == "False"
+        ]
 
       filtered_indices = []
       for idx, row in df_ma_filtered.iterrows():
         match_found = False
         for m_t in (
-            ["SMA", "EMA"] if ma_type_filter == "すべて" else [ma_type_filter]
+            ["SMA", "EMA"]
+            if ma_type_filter == "すべて"
+            else [ma_type_filter]
         ):
           for m_p in (
               [5, 25, 75]
@@ -977,25 +1057,28 @@ else:
             "EMA_75位置関係",
         ]
         actual_cols = [c for c in display_cols if c in df_ma_view.columns]
-        df_ma_display = df_ma_view[actual_cols].copy()
+        df_ma_display = df_ma_view[actual_cols].drop_duplicates(
+            subset=["コード"]
+        )
+
+        st.download_button(
+            "📥 MAタッチ詳細一覧をCSV保存",
+            convert_df_to_csv(df_ma_display),
+            "MAタッチスクリーニング.csv",
+            "text/csv",
+            key="dl_ma_mid",
+        )
+
         if "出来高" in df_ma_display.columns:
           df_ma_display["出来高"] = pd.to_numeric(
               df_ma_display["出来高"], errors="coerce"
-          ).apply(
-              lambda x: f"{int(x):,}" if pd.notna(x) else "0"
-          )
+          ).apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
-        st.dataframe(
-            df_ma_display.drop_duplicates(subset=["コード"]),
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(df_ma_display, width="stretch", hide_index=True)
       else:
         st.info(
             "現在、条件を満たすMAタッチ・接近中の銘柄はありません。"
         )
-    else:
-      st.info("💡 サイドバーの画面更新を実行してください。")
 
     # 【下段】セクター別最適戦略
     st.markdown("---")
@@ -1031,7 +1114,7 @@ else:
                   )
 
   # ---------------------------------------------------------
-  # 🚀 高値ブレイク タブ（3段構成・期間・日付・上下限対応）
+  # 🚀 高値ブレイク タブ（上段・中段・下段完全網羅）
   # ---------------------------------------------------------
   with tab_break:
     st.subheader("🚀 高値ブレイク ＆ モメンタム手法")
@@ -1081,24 +1164,37 @@ else:
   # 🤖 セクター別最適戦略 タブ
   # ---------------------------------------------------------
   with tab_ai:
-    st.subheader("🤖 市場区分別最適戦略")
-    markets = ["プライム", "スタンダード", "グロース"]
-    for market in markets:
-      market_df = df_track[df_track["市場"].str.contains(market, na=False)]
-      if len(market_df) >= 2:
-        st.markdown(
-            f"**・市場: 【 {market} 】** (検証数: {len(market_df)}件)"
-        )
-        sec_top = calculate_optimal_strategies_for_df(
-            market_df, method_name=f"調整手法 ({market})"
-        )
-        if not sec_top.empty:
-          c1, c2, c3 = st.columns(3)
-          cols = [c1, c2, c3]
-          for s_idx, (_, strat) in enumerate(sec_top.iterrows()):
-            with cols[s_idx]:
-              cols[s_idx].markdown(
-                  f"**{s_idx+1}位**: イン: {strat['イン']} / アウト:"
-                  f" {strat['アウト']} | 勝率:**{strat['勝率']}%**"
-                  f" (平均:+{strat['平均リターン']}%)"
-              )
+    st.subheader("🤖 全セクター横断 最適戦略サマリー")
+    st.markdown(
+        "各セクターごとの全手法における検証結果を横断的に集計・表示します。"
+    )
+    st.markdown("---")
+    if not df_track.empty:
+      sectors = [
+          s
+          for s in df_track["セクター"].dropna().unique()
+          if str(s).strip() != "" and str(s) != "nan" and str(s) != "未分類"
+      ]
+      if sectors:
+        for sector in sectors:
+          sector_df = df_track[df_track["セクター"] == sector]
+          if len(sector_df) >= 2:
+            st.markdown(
+                f"### 🏢 セクター: 【 {sector} 】 (監視銘柄数:"
+                f" {len(sector_df)}件)"
+            )
+            sec_top = calculate_optimal_strategies_for_df(
+                sector_df, method_name=f"総合 ({sector})"
+            )
+            if not sec_top.empty:
+              c1, c2, c3 = st.columns(3)
+              cols = [c1, c2, c3]
+              for s_idx, (_, strat) in enumerate(sec_top.iterrows()):
+                with cols[s_idx]:
+                  cols[s_idx].markdown(
+                      f"**{s_idx+1}位**: イン: {strat['イン']} /"
+                      f" アウト: {strat['アウト']} |"
+                      f" 勝率:**{strat['勝率']}%**"
+                      f" (平均:+{strat['平均リターン']}%)"
+                  )
+            st.markdown("---")
