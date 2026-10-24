@@ -24,23 +24,20 @@ GSHEET_EXPORT_URL = "https://docs.google.com/spreadsheets/d/1uIFIdSyAKSokBobeTaD
 # ★ご自身の『【ガチ研専用】ストップ高追跡リスト』のスプレッドシートIDを設定してください
 TRACKING_GSHEET_ID = "https://docs.google.com/spreadsheets/d/1UDGhiOI7Nhv2dmZ_I5VcA_0PkLFTyD6KV-7JeJk-R90/edit?usp=sharing"
 
-
 def load_stock_master():
-  """『銘柄データ.xlsx』の『銘柄データ』シートから、コード、銘柄名、市場、セクターの辞書を作成する"""
+  """Googleスプレッドシート（CSV URL）から、コード、銘柄名、市場、セクターの辞書を作成する"""
   name_dict = {}
   market_dict = {}
   sector_dict = {}
 
-  # ご自身のスプレッドシートのURL（gid=0などは必要に応じて調整してください）
   sheet_url = "https://docs.google.com/spreadsheets/d/11qtf0L__69eW3b_jNfXMz6L5uKcZWRZnUtKeVFuirrE/export?format=csv&gid=0"
 
-  name_dict = {}
-  market_dict = {}
-  sector_dict = {}
-
   try:
-    # Excelファイル読み込みからCSV（スプレッドシート）読み込みに変更
     df_ex = pd.read_csv(sheet_url, dtype=str)
+
+    # --- ▼ ETF・ETN をマスターの段階で完全に除外する処理 ▼ ---
+    if "市場・商品区分" in df_ex.columns:
+      df_ex = df_ex[~df_ex["市場・商品区分"].str.contains("ETF|ETN", na=False)]
 
     for _, row in df_ex.iterrows():
       code_raw = str(row.get("コード", "")).replace(".T", "").strip()
@@ -246,7 +243,7 @@ def load_tracking_master():
     except Exception as e:
       print(f"追跡マスター読み込みエラー: {e}")
 
-  # --- ▼▼▼ ここから追加 (キャッシュ内の廃止銘柄を排除) ▼▼▼ ---
+  # --- ▼ キャッシュ内の古い廃止銘柄を排除する処理 ▼ ---
   if not df_track.empty and "コード" in df_track.columns:
     valid_track_codes = set(df_track["コード"].astype(str).str.zfill(4))
 
@@ -257,7 +254,6 @@ def load_tracking_master():
     if not df_brk.empty and "コード" in df_brk.columns:
       df_brk["コード"] = df_brk["コード"].astype(str).str.zfill(4)
       df_brk = df_brk[df_brk["コード"].isin(valid_track_codes)]
-  # --- ▲▲▲ ここまで追加 ▲▲▲ ---
 
   return df_track, df_sig, df_ma, df_brk
 
@@ -283,10 +279,9 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
 
   name_dict, market_dict, sector_dict = load_stock_master()
 
-  # --- ▼▼▼ ここから追加 (スプレッドシートに存在しない廃止銘柄を除外) ▼▼▼ ---
+  # --- ▼ スプレッドシートに存在しない廃止銘柄・ETFをループ前に一括除外（軽量化） ▼ ---
   if name_dict:
     valid_codes = set(name_dict.keys())
-    # df_trackの「コード」列を4桁文字列にして比較し、スプレッドシートに存在するコードだけに絞り込む
     df_track["コード_check"] = (
         df_track["コード"].astype(str).str.replace(".T", "").str.zfill(4)
     )
@@ -295,7 +290,6 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
     )
     if df_track.empty:
       return df_track, 0, 0
-  # --- ▲▲▲ ここまで追加 ▲▲▲ ---
 
   numeric_cols = ["発生日終値"] + DAY_COLUMNS
   for col in numeric_cols:
@@ -584,9 +578,7 @@ def process_s_high_sources():
           io.BytesIO(response.content), sheet_name=net_sheet, dtype=str
       )
       with pd.ExcelWriter(S_HIGH_SOURCE_FILE, engine="openpyxl") as writer:
-        df_src.to_excel(
-            writer, sheet_name="2026 ストップ高リスト", index=False
-        )
+        df_src.to_excel(writer, sheet_name="2026 ストップ高リスト", index=False)
       apply_excel_styling(S_HIGH_SOURCE_FILE)
   except Exception as e:
     print(f"外部スプレッドシート取得エラー（ローカルフォールバック利用）: {e}")
@@ -639,7 +631,6 @@ def process_s_high_sources():
       )
       market_val = market_dict.get(raw_code, "プライム")
 
-      # スプレッドシート由来の業種（セクター）を優先取得
       sector_src = (
           str(row.get("業種", ""))
           .replace("業", "")
@@ -721,7 +712,14 @@ def process_s_high_sources():
           subset=["アラートID"], keep="first"
       )
 
-  save_tracking_master(df_track, pd.DataFrame(), df_ma, df_brk)
+  # ▼▼▼ ここを修正（df_ma_cacheを安全にロードしてからシグナルを抽出・保存する） ▼>
+  _, _, df_ma_cache_loaded, _ = load_tracking_master()
+
+  df_sig_default = filter_adjustment_signals(
+      df_track, df_ma_cache_loaded , adjustment_days=2
+  )
+  save_tracking_master(df_track, df_sig_default, df_ma, df_brk)
+
   return df_track, pd.DataFrame()
 
 
@@ -740,6 +738,7 @@ def compute_ma_status_and_dev(current_price, ma_value, threshold_pct=3.0):
     status = "📈 上方離脱"
 
   return status, round(dev_pct, 2)
+
 
 def filter_adjustment_signals(
     df_track,
@@ -761,17 +760,13 @@ def filter_adjustment_signals(
   if df["発生日_dt"].isna().all():
     return pd.DataFrame()
 
-  # 1. データ内に存在するユニークな発生日を降順（新しい順）で取得
   unique_dates = sorted(df["発生日_dt"].dropna().unique(), reverse=True)
 
-  # 2. 調整日数に応じた「対象とすべき発生日（起点）」を営業日ベースで特定
   target_date = None
   if adjustment_days == 2:
-    # 2日調整：起点となる発生日は「前営業日（一番新しい発生日）」
     if len(unique_dates) >= 1:
       target_date = unique_dates[0]
   elif adjustment_days == 3:
-    # 3日調整：起点となる発生日は「前々営業日（2番目に新しい発生日）」
     if len(unique_dates) >= 2:
       target_date = unique_dates[1]
   else:
@@ -780,7 +775,6 @@ def filter_adjustment_signals(
   if target_date is None:
     return pd.DataFrame()
 
-  # 発生日が該当する営業日の銘柄だけに厳密に絞り込む
   df = df[df["発生日_dt"] == target_date]
 
   results = []
@@ -798,22 +792,19 @@ def filter_adjustment_signals(
     is_signal = False
     latest_price = None
 
-    # 3. ユーザー様の定義に沿った厳密な判定
     if adjustment_days == 2:
-      # 2日調整：前営業日S高(起点)で、本日は前営業日S高値から下落していること
       if pd.notna(d2_close):
         d2_close = float(d2_close)
         if d2_close < base_close:
           is_signal = True
           latest_price = d2_close
-      elif pd.notna(d1_close):  # d2が未取得の場合はd1を見るフォールバック
+      elif pd.notna(d1_close):
         d1_close = float(d1_close)
         if d1_close < base_close:
           is_signal = True
           latest_price = d1_close
 
     elif adjustment_days == 3:
-      # 3日調整：前々営業日S高(起点)で、前営業日(d1)が起点より安値引け、かつ本日(d2)が前営業日(d1)から下落していること
       if pd.notna(d1_close) and pd.notna(d2_close):
         d1_close = float(d1_close)
         d2_close = float(d2_close)
@@ -939,4 +930,4 @@ def filter_adjustment_signals(
       "S高理由・テーマ",
   ]
   existing_cols = [c for c in cols_order if c in df_res.columns]
-  return df_res[existing_cols]  # ← ここもインデントを揃える
+  return df_res[existing_cols]
