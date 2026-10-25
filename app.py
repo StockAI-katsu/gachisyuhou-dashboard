@@ -232,7 +232,7 @@ def calculate_optimal_strategies_for_df(dataframe, method_name):
 # 共通コンポーネント：高値ブレイク用シグナル表示関数
 # ---------------------------------------------------------
 def render_breakout_section(key_prefix="global", show_filters=True):
-  st.markdown("### 🚀 高値ブレイク手法シグナル")
+  st.markdown("### 🚀 ３．高値ブレイク手法シグナル")
 
   if show_filters:
     cb1, cb2, cb3, cb4, cb5 = st.columns([1.2, 1, 1, 1, 1])
