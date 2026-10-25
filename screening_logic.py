@@ -37,7 +37,9 @@ def load_stock_master():
 
     # --- ▼ ETF・ETN をマスターの段階で完全に除外する処理 ▼ ---
     if "市場・商品区分" in df_ex.columns:
-      df_ex = df_ex[~df_ex["市場・商品区分"].str.contains("ETF|ETN", na=False)]
+      df_ex = df_ex[
+          ~df_ex["市場・商品区分"].str.contains("ETF|ETN", na=False)
+      ]
 
     for _, row in df_ex.iterrows():
       code_raw = str(row.get("コード", "")).replace(".T", "").strip()
@@ -712,15 +714,170 @@ def process_s_high_sources():
           subset=["アラートID"], keep="first"
       )
 
-  # ▼▼▼ ここを修正（df_ma_cacheを安全にロードしてからシグナルを抽出・保存する） ▼>
-  _, _, df_ma_cache_loaded, _ = load_tracking_master()
+# ▼▼▼ 本日のシグナルシートへ全3手法のシグナルを体系的にまとめて転記・保存する処理 ▼▼▼
+  _, _, df_ma_cache_loaded, df_brk_cache_loaded = load_tracking_master()
 
-  df_sig_default = filter_adjustment_signals(
-      df_track, df_ma_cache_loaded , adjustment_days=2
+  # 1. 2日・3日調整シグナルの取得
+  df_adj2_sig = filter_adjustment_signals(
+      df_track,
+      df_ma_cache_loaded,
+      adjustment_days=2,
+      min_dev=-100.0,
+      max_dev=100.0,
   )
-  save_tracking_master(df_track, df_sig_default, df_ma, df_brk)
+  df_adj3_sig = filter_adjustment_signals(
+      df_track,
+      df_ma_cache_loaded,
+      adjustment_days=3,
+      min_dev=-100.0,
+      max_dev=100.0,
+  )
 
-  return df_track, pd.DataFrame()
+  # 2. MAタッチシグナルの取得（接近中などの主要データ）
+  df_ma_signals = pd.DataFrame()
+  if not df_ma_cache_loaded.empty:
+    cond_ma = (
+        (df_ma_cache_loaded.get("SMA_5位置関係") == "🎯 接近中")
+        | (df_ma_cache_loaded.get("EMA_5位置関係") == "🎯 接近中")
+        | (df_ma_cache_loaded.get("is_target") == "True")
+    )
+    if isinstance(cond_ma, pd.Series):
+      df_ma_signals = df_ma_cache_loaded[cond_ma].copy()
+
+  # 3. 高値ブレイクシグナルの取得（直前・達成など）
+  df_brk_signals = pd.DataFrame()
+  if not df_brk_cache_loaded.empty:
+    df_brk_signals = df_brk_cache_loaded.copy()
+
+  # 1つのシートに読みやすいようセクションごとにデータを組み立てる
+  signal_rows = []
+
+  # --- セクション1：１．２・３日調整手法シグナル ---
+  signal_rows.append({
+      "シグナル区分": "【 １．２・３日調整手法シグナル（発生から２～３営業日目） 】",
+      "コード": "",
+      "銘柄名": "",
+      "市場": "",
+      "セクター": "",
+      "詳細・ステータス": "",
+  })
+  has_adj = False
+  if not df_adj2_sig.empty:
+    has_adj = True
+    for _, r in df_adj2_sig.iterrows():
+      signal_rows.append({
+          "シグナル区分": "2日調整",
+          "コード": r.get("コード"),
+          "銘柄名": r.get("銘柄名"),
+          "市場": r.get("市場"),
+          "セクター": r.get("セクター"),
+          "詳細・ステータス": f"発生日: {r.get('発生日')} / 最新株価: {r.get('最新株価（日付）')}",
+      })
+  if not df_adj3_sig.empty:
+    has_adj = True
+    for _, r in df_adj3_sig.iterrows():
+      signal_rows.append({
+          "シグナル区分": "3日調整",
+          "コード": r.get("コード"),
+          "銘柄名": r.get("銘柄名"),
+          "市場": r.get("市場"),
+          "セクター": r.get("セクター"),
+          "詳細・ステータス": f"発生日: {r.get('発生日')} / 最新株価: {r.get('最新株価（日付）')}",
+      })
+  if not has_adj:
+    signal_rows.append({
+        "シグナル区分": "お知らせ",
+        "コード": "",
+        "銘柄名": "",
+        "市場": "",
+        "セクター": "",
+        "詳細・ステータス": "現在、条件に合致する本日のシグナルはありません。",
+    })
+
+  # 空行
+  signal_rows.append({
+      "シグナル区分": "",
+      "コード": "",
+      "銘柄名": "",
+      "市場": "",
+      "セクター": "",
+      "詳細・ステータス": "",
+  })
+
+  # --- セクション2：２．MAタッチ手法シグナル ---
+  signal_rows.append({
+      "シグナル区分": "【 ２．MAタッチ手法シグナル（特化型フィルター完備） 】",
+      "コード": "",
+      "銘柄名": "",
+      "市場": "",
+      "セクター": "",
+      "詳細・ステータス": "",
+  })
+  if not df_ma_signals.empty:
+    for _, r in df_ma_signals.head(50).iterrows():
+      signal_rows.append({
+          "シグナル区分": "MA接近",
+          "コード": r.get("コード"),
+          "銘柄名": r.get("銘柄名"),
+          "市場": r.get("市場"),
+          "セクター": r.get("セクター"),
+          "詳細・ステータス": f"現在値: {r.get('現在値')}円 / 5日線位置: {r.get('SMA_5位置関係', '-')}",
+      })
+  else:
+    signal_rows.append({
+        "シグナル区分": "お知らせ",
+        "コード": "",
+        "銘柄名": "",
+        "市場": "",
+        "セクター": "",
+        "詳細・ステータス": "現在、条件に合致するMAタッチシグナルはありません。",
+    })
+
+  # 空行
+  signal_rows.append({
+      "シグナル区分": "",
+      "コード": "",
+      "銘柄名": "",
+      "市場": "",
+      "セクター": "",
+      "詳細・ステータス": "",
+  })
+
+  # --- セクション3：３．高値ブレイク手法シグナル ---
+  signal_rows.append({
+      "シグナル区分": "【 ３．高値ブレイク手法シグナル 】",
+      "コード": "",
+      "銘柄名": "",
+      "市場": "",
+      "セクター": "",
+      "詳細・ステータス": "",
+  })
+  if not df_brk_signals.empty:
+    for _, r in df_brk_signals.head(50).iterrows():
+      signal_rows.append({
+          "シグナル区分": "高値ブレイク監視",
+          "コード": r.get("コード"),
+          "銘柄名": r.get("銘柄名"),
+          "市場": r.get("市場"),
+          "セクター": r.get("セクター"),
+          "詳細・ステータス": f"現在値: {r.get('現在値')}円 / 3ヶ月ステータス: {r.get('3ヶ月_ステータス', '-')}",
+      })
+  else:
+    signal_rows.append({
+        "シグナル区分": "お知らせ",
+        "コード": "",
+        "銘柄名": "",
+        "市場": "",
+        "セクター": "",
+        "詳細・ステータス": "現在、条件に合致する高値ブレイクシグナルはありません。",
+    })
+
+  df_sig_combined = pd.DataFrame(signal_rows)
+
+  # 追跡管理マスターとともに一括保存
+  save_tracking_master(df_track, df_sig_combined, df_ma, df_brk)
+
+  return df_track, df_sig_combined
 
 
 def compute_ma_status_and_dev(current_price, ma_value, threshold_pct=3.0):
@@ -897,7 +1054,7 @@ def filter_adjustment_signals(
         "5EMA位置関係": calc_details.get("5EMA位置関係"),
         "25EMA乖離率(%)": calc_details.get("25EMA乖離率(%)"),
         "25EMA位置関係": calc_details.get("25EMA位置関係"),
-        "75EMA乖離率(%)": calc_details.get("75EMA乖離率(%)"),
+        "75EMA乖離率(%)": calc_details.get("75EMA乖离率(%)"),
         "75EMA位置関係": calc_details.get("75EMA位置関係"),
         "S高理由・テーマ": row.get("S高理由・テーマ", ""),
     }
