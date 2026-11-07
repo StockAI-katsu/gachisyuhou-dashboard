@@ -3,14 +3,13 @@ import io
 import json
 import os
 import numpy as np
-import pandas as pd
-import requests
-import yfinance as yf
-import streamlit as st
-
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+import pandas as pd
+import requests
+import streamlit as st
+import yfinance as yf
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -23,6 +22,7 @@ GSHEET_EXPORT_URL = "https://docs.google.com/spreadsheets/d/1uIFIdSyAKSokBobeTaD
 
 # ★ご自身の『【ガチ研専用】ストップ高追跡リスト』のスプレッドシートIDを設定してください
 TRACKING_GSHEET_ID = "https://docs.google.com/spreadsheets/d/1UDGhiOI7Nhv2dmZ_I5VcA_0PkLFTyD6KV-7JeJk-R90/edit?usp=sharing"
+
 
 def load_stock_master():
   """Googleスプレッドシート（CSV URL）から、コード、銘柄名、市場、セクターの辞書を作成する"""
@@ -84,6 +84,46 @@ TRACKING_COLUMNS = [
     "発生日終値",
     "S高理由・テーマ",
 ] + DAY_COLUMNS
+
+
+def calculate_rsi_and_trend(df_prices, period=14):
+  """PandasベースでRSI（デフォルト14）およびトレンド（上昇・ヨコヨコ・下降）を計算する"""
+  try:
+    if df_prices is None or len(df_prices) < period + 2:
+      return 50.0, "➡️ ヨコヨコ"
+
+    close = df_prices["Close"]
+    if isinstance(close, pd.DataFrame):
+      close = close.iloc[:, 0]
+
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    avg_gain = gain.ewm(
+        alpha=1 / period, min_periods=period, adjust=False
+    ).mean()
+    avg_loss = loss.ewm(
+        alpha=1 / period, min_periods=period, adjust=False
+    ).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    latest_rsi = float(rsi.iloc[-1])
+    prev_rsi = float(rsi.iloc[-2]) if len(rsi) >= 2 else latest_rsi
+    diff = latest_rsi - prev_rsi
+
+    if diff > 1.5:
+      trend = "📈 上昇"
+    elif diff < -1.5:
+      trend = "📉 下降"
+    else:
+      trend = "➡️ ヨコヨコ"
+
+    return round(latest_rsi, 1), trend
+  except Exception:
+    return 50.0, "➡️ ヨコヨコ"
 
 
 def apply_excel_styling(file_path):
@@ -411,13 +451,16 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
           df_track.at[idx, f"{d}日目_終値"] = close_val
           df_track.at[idx, f"{d}日目_騰落率(%)"] = round(ret_val, 2)
 
-      # --- MAタッチ用データの生成 ---
-      hist_ma = ticker_obj.history(period="4mo", auto_adjust=True)
+      # --- MAタッチ用データの生成（RSI統合） ---
+      hist_ma = ticker_obj.history(period="6mo", auto_adjust=True)
       if hist_ma is not None and not hist_ma.empty:
         if isinstance(hist_ma.columns, pd.MultiIndex):
           hist_ma.columns = hist_ma.columns.get_level_values(0)
         c_price = float(hist_ma.iloc[-1]["Close"])
         vol = int(hist_ma.iloc[-1]["Volume"])
+
+        # RSI計算 (デフォルト14)
+        rsi_val, rsi_trd = calculate_rsi_and_trend(hist_ma, period=14)
 
         ma_configs = [
             ("SMA", 5, hist_ma["Close"].rolling(window=5).mean()),
@@ -435,6 +478,8 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
             "セクター": sector_val,
             "現在値": round(c_price, 1),
             "出来高": vol,
+            "RSI(14)": rsi_val,
+            "RSIトレンド": rsi_trd,
         }
 
         any_target = False
@@ -455,7 +500,7 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
         ma_row_dict["is_target"] = str(any_target)
         ma_calc_rows.append(ma_row_dict)
 
-      # --- 高値ブレイク用データの生成 ---
+      # --- 高値ブレイク用データの生成（RSI統合） ---
       hist_brk = None
       try:
         hist_brk = ticker_obj.history(period="1yr", auto_adjust=True)
@@ -476,6 +521,9 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
         c_price = float(hist_brk.iloc[-1]["Close"])
         vol = int(hist_brk.iloc[-1]["Volume"])
 
+        # RSI計算 (デフォルト14)
+        rsi_val_b, rsi_trd_b = calculate_rsi_and_trend(hist_brk, period=14)
+
         periods_def = {
             "1ヶ月": 20,
             "3ヶ月": 60,
@@ -490,6 +538,8 @@ def fetch_and_update_stock_data(df_track, target_indices=None):
             "セクター": sector_val,
             "現在値": round(c_price, 1),
             "出来高": vol,
+            "RSI(14)": rsi_val_b,
+            "RSIトレンド": rsi_trd_b,
         }
 
         for p_name, biz_days in periods_def.items():
@@ -714,10 +764,9 @@ def process_s_high_sources():
           subset=["アラートID"], keep="first"
       )
 
-# ▼▼▼ 本日のシグナルシートへ全3手法のシグナルを体系的にまとめて転記・保存する処理 ▼▼▼
+  # ▼▼▼ 本日のシグナルシートへ全3手法のシグナル（RSI・トレンド込み）を体系的にまとめて転記・保存する処理 ▼▼▼
   _, _, df_ma_cache_loaded, df_brk_cache_loaded = load_tracking_master()
 
-  # 1. 2日・3日調整シグナルの取得
   df_adj2_sig = filter_adjustment_signals(
       df_track,
       df_ma_cache_loaded,
@@ -733,7 +782,6 @@ def process_s_high_sources():
       max_dev=100.0,
   )
 
-  # 2. MAタッチシグナルの取得（接近中などの主要データ）
   df_ma_signals = pd.DataFrame()
   if not df_ma_cache_loaded.empty:
     cond_ma = (
@@ -744,12 +792,10 @@ def process_s_high_sources():
     if isinstance(cond_ma, pd.Series):
       df_ma_signals = df_ma_cache_loaded[cond_ma].copy()
 
-  # 3. 高値ブレイクシグナルの取得（直前・達成など）
   df_brk_signals = pd.DataFrame()
   if not df_brk_cache_loaded.empty:
     df_brk_signals = df_brk_cache_loaded.copy()
 
-  # 1つのシートに読みやすいようセクションごとにデータを組み立てる
   signal_rows = []
 
   # --- セクション1：１．２・３日調整手法シグナル ---
@@ -771,7 +817,11 @@ def process_s_high_sources():
           "銘柄名": r.get("銘柄名"),
           "市場": r.get("市場"),
           "セクター": r.get("セクター"),
-          "詳細・ステータス": f"発生日: {r.get('発生日')} / 最新株価: {r.get('最新株価（日付）')}",
+          "詳細・ステータス": (
+              f"発生日: {r.get('発生日')} / 最新株価:"
+              f" {r.get('最新株価（日付）')} / RSI: {r.get('RSI(14)', 50)}"
+              f" ({r.get('RSIトレンド', '-')})"
+          ),
       })
   if not df_adj3_sig.empty:
     has_adj = True
@@ -782,7 +832,11 @@ def process_s_high_sources():
           "銘柄名": r.get("銘柄名"),
           "市場": r.get("市場"),
           "セクター": r.get("セクター"),
-          "詳細・ステータス": f"発生日: {r.get('発生日')} / 最新株価: {r.get('最新株価（日付）')}",
+          "詳細・ステータス": (
+              f"発生日: {r.get('発生日')} / 最新株価:"
+              f" {r.get('最新株価（日付）')} / RSI: {r.get('RSI(14)', 50)}"
+              f" ({r.get('RSIトレンド', '-')})"
+          ),
       })
   if not has_adj:
     signal_rows.append({
@@ -794,7 +848,6 @@ def process_s_high_sources():
         "詳細・ステータス": "現在、条件に合致する本日のシグナルはありません。",
     })
 
-  # 空行
   signal_rows.append({
       "シグナル区分": "",
       "コード": "",
@@ -821,7 +874,11 @@ def process_s_high_sources():
           "銘柄名": r.get("銘柄名"),
           "市場": r.get("市場"),
           "セクター": r.get("セクター"),
-          "詳細・ステータス": f"現在値: {r.get('現在値')}円 / 5日線位置: {r.get('SMA_5位置関係', '-')}",
+          "詳細・ステータス": (
+              f"現在値: {r.get('現在値')}円 / 5日線位置:"
+              f" {r.get('SMA_5位置関係', '-')} / RSI: {r.get('RSI(14)', 50)}"
+              f" ({r.get('RSIトレンド', '-')})"
+          ),
       })
   else:
     signal_rows.append({
@@ -833,7 +890,6 @@ def process_s_high_sources():
         "詳細・ステータス": "現在、条件に合致するMAタッチシグナルはありません。",
     })
 
-  # 空行
   signal_rows.append({
       "シグナル区分": "",
       "コード": "",
@@ -860,7 +916,11 @@ def process_s_high_sources():
           "銘柄名": r.get("銘柄名"),
           "市場": r.get("市場"),
           "セクター": r.get("セクター"),
-          "詳細・ステータス": f"現在値: {r.get('現在値')}円 / 3ヶ月ステータス: {r.get('3ヶ月_ステータス', '-')}",
+          "詳細・ステータス": (
+              f"現在値: {r.get('現在値')}円 / 3ヶ月ステータス:"
+              f" {r.get('3ヶ月_ステータス', '-')} / RSI:"
+              f" {r.get('RSI(14)', 50)} ({r.get('RSIトレンド', '-')})"
+          ),
       })
   else:
     signal_rows.append({
@@ -874,7 +934,6 @@ def process_s_high_sources():
 
   df_sig_combined = pd.DataFrame(signal_rows)
 
-  # 追跡管理マスターとともに一括保存
   save_tracking_master(df_track, df_sig_combined, df_ma, df_brk)
 
   return df_track, df_sig_combined
@@ -906,7 +965,7 @@ def filter_adjustment_signals(
     min_dev=-30.0,
     max_dev=30.0,
 ):
-  """【2日・3日調整手法】スクリーニング関数（ユーザー様定義の営業日・連続下落ロジック完全準拠版）"""
+  """【2日・3日調整手法】スクリーニング関数（RSI・トレンドデータ自動結合版）"""
   if df_track.empty or "発生日" not in df_track.columns:
     return pd.DataFrame()
 
@@ -974,11 +1033,17 @@ def filter_adjustment_signals(
 
     code = str(row.get("コード", "")).zfill(4)
 
+    # MAキャッシュからRSI情報も取得
+    rsi_val, rsi_trd = 50.0, "➡️ ヨコヨコ"
     ma_info = {}
     if not df_ma_cache.empty and "コード" in df_ma_cache.columns:
       code_ma_df = df_ma_cache[df_ma_cache["コード"] == code]
       if not code_ma_df.empty:
         ma_row = code_ma_df.iloc[0]
+        rsi_val = pd.to_numeric(
+            ma_row.get("RSI(14)", 50.0), errors="coerce"
+        )
+        rsi_trd = str(ma_row.get("RSIトレンド", "➡️ ヨコヨコ"))
         for m_t in ["SMA", "EMA"]:
           for m_p in [5, 25, 75]:
             key = f"{m_t}_{m_p}"
@@ -1044,6 +1109,8 @@ def filter_adjustment_signals(
         "セクター": row.get("セクター", ""),
         "S高発生時終値": base_close,
         "最新株価（日付）": f"{latest_price:,.1f}円 ({latest_date_str})",
+        "RSI(14)": rsi_val,
+        "RSIトレンド": rsi_trd,
         "5SMA乖離率(%)": calc_details.get("5SMA乖離率(%)"),
         "5SMA位置関係": calc_details.get("5SMA位置関係"),
         "25SMA乖離率(%)": calc_details.get("25SMA乖離率(%)"),
@@ -1054,7 +1121,7 @@ def filter_adjustment_signals(
         "5EMA位置関係": calc_details.get("5EMA位置関係"),
         "25EMA乖離率(%)": calc_details.get("25EMA乖離率(%)"),
         "25EMA位置関係": calc_details.get("25EMA位置関係"),
-        "75EMA乖離率(%)": calc_details.get("75EMA乖离率(%)"),
+        "75EMA乖離率(%)": calc_details.get("75EMA乖離率(%)"),
         "75EMA位置関係": calc_details.get("75EMA位置関係"),
         "S高理由・テーマ": row.get("S高理由・テーマ", ""),
     }
@@ -1072,6 +1139,8 @@ def filter_adjustment_signals(
       "セクター",
       "S高発生時終値",
       "最新株価（日付）",
+      "RSI(14)",
+      "RSIトレンド",
       "5SMA乖離率(%)",
       "5SMA位置関係",
       "25SMA乖離率(%)",
